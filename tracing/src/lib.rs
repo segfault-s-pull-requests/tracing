@@ -977,6 +977,9 @@ pub use tracing_attributes::instrument;
 #[macro_use]
 mod macros;
 
+/// Link-time enumeration of macro-generated callsite metadata.
+pub mod callsite_table;
+
 pub mod dispatcher;
 pub mod field;
 /// Attach a span to a `std::future::Future`.

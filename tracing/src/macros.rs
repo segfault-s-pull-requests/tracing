@@ -2728,6 +2728,7 @@ macro_rules! callsite {
                 kind: $kind,
             }
         };
+        $crate::__tracing_record_metadata!(META);
         static __CALLSITE: $crate::callsite::DefaultCallsite = $crate::callsite::DefaultCallsite::new(&META);
         __CALLSITE.register();
         &__CALLSITE
@@ -2778,6 +2779,7 @@ macro_rules! callsite2 {
                 kind: $kind,
             }
         };
+        $crate::__tracing_record_metadata!(META);
         $crate::callsite::DefaultCallsite::new(&META)
     }};
 }
