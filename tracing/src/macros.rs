@@ -2779,7 +2779,8 @@ macro_rules! callsite2 {
                 kind: $kind,
             }
         };
-        // Capture the original positional formatting syntax, not a message field.
+        // Capture source once, then emit a single record with both source and template.
+        static __TRACING_SOURCE: &str = $crate::__macro_support::__tracing_source_text!($($fields)*);
         $crate::__tracing_find_template!(META; $($fields)*);
         $crate::callsite::DefaultCallsite::new(&META)
     }};

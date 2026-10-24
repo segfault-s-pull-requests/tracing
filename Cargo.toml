@@ -4,6 +4,7 @@ members = [
     "tracing",
     "tracing-core",
     "tracing-attributes",
+    "tracing-callsite-source",
     "tracing-error",
     "tracing-flame",
     "tracing-futures",

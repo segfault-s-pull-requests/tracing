@@ -8,32 +8,44 @@
 //! - An explicit message = format_args!(...) is a template; plain message fields are not.
 //! - Formatting arguments are never evaluated again to obtain a template.
 //! - Future side metadata extends Entry rather than any upstream tracing type.
+//! - Source is best-effort: stable macro span information may be incomplete.
 //!
 //! Section enumeration currently works on Linux/Android ELF. Unretained object
 //! files may be removed by linker garbage collection.
 
 use crate::Metadata;
 
-/// Fixed-layout ELF record: one metadata pointer and an optional static string.
+/// Fixed-layout ELF record: metadata, optional format template, optional source.
 ///
 /// The anchor has no metadata and is filtered from the public iterator. All
-/// records must have identical alignment and size (24 bytes on 64-bit ELF).
+/// records must have identical alignment and size (40 bytes on 64-bit ELF).
 #[doc(hidden)]
 #[repr(C)]
 pub struct Entry {
     metadata: Option<&'static Metadata<'static>>,
     template: Option<&'static str>,
+    source: Option<&'static str>,
 }
 
 impl Entry {
     #[doc(hidden)]
     pub const fn new(metadata: &'static Metadata<'static>) -> Self {
-        Self { metadata: Some(metadata), template: None }
+        Self { metadata: Some(metadata), template: None, source: None }
     }
 
     #[doc(hidden)]
     pub const fn with_template(metadata: &'static Metadata<'static>, template: Option<&'static str>) -> Self {
-        Self { metadata: Some(metadata), template }
+        Self { metadata: Some(metadata), template, source: None }
+    }
+
+    /// Best-effort original source, or normalized field tokens if unavailable.
+    pub const fn source(&self) -> Option<&'static str> {
+        self.source
+    }
+
+    #[doc(hidden)]
+    pub const fn with_source(metadata: &'static Metadata<'static>, template: Option<&'static str>, source: Option<&'static str>) -> Self {
+        Self { metadata: Some(metadata), template, source }
     }
 
     pub const fn metadata(&self) -> Option<&'static Metadata<'static>> {
@@ -49,7 +61,7 @@ impl Entry {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[used]
 #[link_section = "tracing_callsite_meta"]
-static SECTION_ANCHOR: Entry = Entry { metadata: None, template: None };
+static SECTION_ANCHOR: Entry = Entry { metadata: None, template: None, source: None };
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn entries() -> &'static [Entry] {
@@ -85,13 +97,16 @@ pub fn records() -> impl Iterator<Item = &'static Entry> {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __tracing_record_metadata {
-    ($meta:ident) => { $crate::__tracing_record_metadata!($meta; None); };
+    ($meta:ident) => { $crate::__tracing_record_metadata!($meta; None; None); };
     ($meta:ident; $template:expr) => {
+        $crate::__tracing_record_metadata!($meta; $template; Some(__TRACING_SOURCE));
+    };
+    ($meta:ident; $template:expr; $source:expr) => {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         #[used]
         #[link_section = "tracing_callsite_meta"]
         static __TRACING_METADATA_RECORD: $crate::callsite_table::Entry =
-            $crate::callsite_table::Entry::with_template(&$meta, $template);
+            $crate::callsite_table::Entry::with_source(&$meta, $template, $source);
     };
 }
 
@@ -200,5 +215,9 @@ mod tests {
         assert_eq!(template_for("mixed"), Some(Some("mixed {}")));
         assert_eq!(template_for("named"), Some(None));
         assert_eq!(template_for("manual_fmt"), Some(Some("just {}")));
+        // Stable spans are best-effort; at minimum the macro must capture a
+        // source representation in the single linker record.
+        let source = super::records().find(|r| r.metadata().unwrap().name() == "rewritten").unwrap().source();
+        assert!(source.is_some_and(|s| !s.is_empty()));
     }
 }
