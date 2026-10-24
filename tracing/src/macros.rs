@@ -2779,7 +2779,8 @@ macro_rules! callsite2 {
                 kind: $kind,
             }
         };
-        $crate::__tracing_record_metadata!(META);
+        // Capture the original positional formatting syntax, not a message field.
+        $crate::__tracing_find_template!(META; $($fields)*);
         $crate::callsite::DefaultCallsite::new(&META)
     }};
 }

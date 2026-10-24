@@ -1,71 +1,69 @@
-//! Link-time table of metadata for compiled `tracing` event and span callsites.
+//! Link-time callsite metadata and the original positional format strings.
 //!
-//! Invariants (these are requirements, not incidental implementation details):
-//! - Do not modify `Metadata`, `DefaultCallsite`, or subscriber APIs/layouts.
-//! - Record a pointer when a macro expands; do not depend on callsite execution,
-//!   registration, subscriber installation, or runtime allocation.
-//! - Keep all table-specific types, implementations, and linker mechanics here.
-//!   Other tracing source files should contain only the module declaration and
-//!   the one-line hooks in `callsite!` and `callsite2!`.
-//! - Each linked macro-generated callsite contributes one table entry; neither
-//!   using a callsite nor registering it adds further entries.
-//! - Do not change how ordinary `tracing` users invoke the existing macros.
-//! - Future fields (such as a format template) must extend this side table,
-//!   rather than changing existing tracing data layouts.
+//! Invariants for upstream compatibility:
+//! - Metadata, DefaultCallsite, formatting output and subscriber APIs are unchanged.
+//! - The table is initialized by linked statics, not registration or allocations.
+//! - All new types, implementations and macro helpers remain in this file.
+//! - callsite2! passes original field tokens to the local parser.
+//! - An explicit message = format_args!(...) is a template; plain message fields are not.
+//! - Formatting arguments are never evaluated again to obtain a template.
+//! - Future side metadata extends Entry rather than any upstream tracing type.
 //!
-//! The ELF implementation currently supports Linux/Android. Other targets
-//! return an empty iterator. Linker garbage collection may remove callsites
-//! that the final program does not otherwise retain.
+//! Section enumeration currently works on Linux/Android ELF. Unretained object
+//! files may be removed by linker garbage collection.
 
 use crate::Metadata;
 
-/// One section record. None is reserved for the section anchor only.
+/// Fixed-layout ELF record: one metadata pointer and an optional static string.
 ///
-/// A transparent pointer-sized representation is intentional: concatenated
-/// section records must form a contiguous array without inter-record padding.
+/// The anchor has no metadata and is filtered from the public iterator. All
+/// records must have identical alignment and size (24 bytes on 64-bit ELF).
 #[doc(hidden)]
-#[repr(transparent)]
-pub struct Entry(Option<&'static Metadata<'static>>);
+#[repr(C)]
+pub struct Entry {
+    metadata: Option<&'static Metadata<'static>>,
+    template: Option<&'static str>,
+}
 
 impl Entry {
     #[doc(hidden)]
     pub const fn new(metadata: &'static Metadata<'static>) -> Self {
-        Self(Some(metadata))
+        Self { metadata: Some(metadata), template: None }
     }
 
-    fn metadata(&self) -> Option<&'static Metadata<'static>> {
-        self.0
+    #[doc(hidden)]
+    pub const fn with_template(metadata: &'static Metadata<'static>, template: Option<&'static str>) -> Self {
+        Self { metadata: Some(metadata), template }
+    }
+
+    pub const fn metadata(&self) -> Option<&'static Metadata<'static>> {
+        self.metadata
+    }
+
+    /// Original positional format string; never the value of a message field.
+    pub const fn template(&self) -> Option<&'static str> {
+        self.template
     }
 }
 
-// A guaranteed section member makes __start and __stop available even if the
-// program contains no tracing events or spans. The sentinel is never returned.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[used]
 #[link_section = "tracing_callsite_meta"]
-static SECTION_ANCHOR: Entry = Entry(None);
+static SECTION_ANCHOR: Entry = Entry { metadata: None, template: None };
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn entries() -> &'static [Entry] {
-    // GNU-compatible ELF linkers synthesize __start_SECTION/__stop_SECTION
-    // for section names that are valid C identifiers. Keep this exact section
-    // name in sync with the macro below; it must not begin with a dot.
+    // The section name is a C identifier so ELF linkers synthesize these
+    // boundaries. Keep the name synchronized with the emission macro.
     extern "C" {
         #[link_name = "__start_tracing_callsite_meta"]
         static START: Entry;
         #[link_name = "__stop_tracing_callsite_meta"]
         static STOP: Entry;
     }
-
-    // Preserve an explicit reference to the anchor so it is linked into the
-    // executable, including when none of the application callsites are kept.
     core::hint::black_box(&SECTION_ANCHOR);
-
-    // SAFETY: The linker boundaries bracket contiguous immutable Entry records
-    // emitted with exactly the same section and layout. The start is aligned;
-    // the byte length is a multiple of the Entry size. All stored references
-    // originate from static META values and therefore outlive this slice.
-    // This is ELF/linker-specific and must not be copied to arbitrary targets.
+    // SAFETY: the linker joins only fixed-layout Entry statics in this section;
+    // each reference points to statically allocated metadata and string data.
     unsafe {
         let start = core::ptr::addr_of!(START);
         let stop = core::ptr::addr_of!(STOP);
@@ -76,33 +74,131 @@ fn entries() -> &'static [Entry] {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn entries() -> &'static [Entry] {
-    &[]
+fn entries() -> &'static [Entry] { &[] }
+
+/// All linked records; includes unexecuted sites and excludes the sentinel.
+pub fn records() -> impl Iterator<Item = &'static Entry> {
+    entries().iter().filter(|entry| entry.metadata().is_some())
 }
 
-/// All linked macro-generated callsite metadata, including unexecuted sites.
-///
-/// No dispatcher/subscriber or runtime registration is required. Custom
-/// implementations of the `Callsite` trait are not represented unless they
-/// also use the macro hook. Ordering is determined by the linker, not source
-/// order. On unsupported targets the iterator is empty.
-pub fn all() -> impl Iterator<Item = &'static Metadata<'static>> {
-    entries().iter().filter_map(Entry::metadata)
-}
-
-/// Internal insertion hook for both tracing callsite construction macros.
-///
-/// Invariant: emit a static *reference to* META, not a copy of Metadata, so
-/// table identity matches the metadata used by the existing callsite.
-/// This hook must stay orthogonal to the registration and enabled paths.
+/// Write exactly one linker record per generated callsite.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __tracing_record_metadata {
-    ($meta:ident) => {
+    ($meta:ident) => { $crate::__tracing_record_metadata!($meta; None); };
+    ($meta:ident; $template:expr) => {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         #[used]
         #[link_section = "tracing_callsite_meta"]
         static __TRACING_METADATA_RECORD: $crate::callsite_table::Entry =
-            $crate::callsite_table::Entry::new(&$meta);
+            $crate::callsite_table::Entry::with_template(&$meta, $template);
     };
+}
+
+/// Why this parser is deliberately separate from tracing's existing field parser:
+/// tracing has multiple formatting paths. Some event! arms rewrite positional
+/// arguments into a message field, while others leave them among field tokens.
+/// fieldset! recognizes the latter, but produces only field names: it cannot
+/// pass the original format string to our linker record without changing its
+/// output or threading new metadata through several upstream macro expansions.
+/// This local parser duplicates part of the field grammar intentionally to keep
+/// upstream changes minimal and avoid changing public macro behavior. When
+/// upstream field syntax changes, update these patterns alongside fieldset!.
+/// Explicit message = format_args!(...) is a template, but plain message is not.
+///
+/// Capture a positional format template before the formatter macro expands.
+/// Some formatting paths contain message = format_args!(...); others retain
+/// raw positional formatting tokens after their structured fields. All normal
+/// field grammars are consumed before interpreting a remaining expression as
+/// a template. A plain message = ... field never qualifies.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __tracing_find_template {
+    ($meta:ident; $($fields:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($fields)* ,);
+    };
+
+    (@fields $meta:ident; , $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident;) => { $crate::__tracing_record_metadata!($meta); };
+
+    // Unlike plain message fields, message = format_args!(...) supplies a
+    // static format template. Match both tracing's qualified expansion and
+    // user-written unqualified forms before the generic named-field arms.
+    (@fields $meta:ident; message = $root:tt :: __macro_support :: format_args ! ($fmt:expr $(, $($args:tt)*)?), $($rest:tt)*) => {
+        $crate::__tracing_record_metadata!($meta; Some($fmt));
+    };
+    (@fields $meta:ident; message = format_args ! ($fmt:expr $(, $($args:tt)*)?), $($rest:tt)*) => {
+        $crate::__tracing_record_metadata!($meta; Some($fmt));
+    };
+
+    // Named fields, as accepted by fieldset! (with Debug/Display variants).
+    (@fields $meta:ident; $($key:ident).+ = ?$val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; $($key:ident).+ = %$val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; $($key:ident).+ = $val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; ?$($key:ident).+, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; %$($key:ident).+, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; $($key:ident).+, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; $key:literal = ?$val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; $key:literal = %$val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; $key:literal = $val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; {$key:expr} = ?$val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; {$key:expr} = %$val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    (@fields $meta:ident; {$key:expr} = $val:expr, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+
+    // format_args! ultimately requires a literal (including expanded macros
+    // such as concat!). Using expr here preserves that upstream validation.
+    (@fields $meta:ident; $fmt:expr, $($args:tt)*) => {
+        $crate::__tracing_record_metadata!($meta; Some($fmt));
+    };
+    (@fields $meta:ident; $($unknown:tt)+) => {
+        $crate::__tracing_record_metadata!($meta);
+    };
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+mod tests {
+    fn template_for(name: &str) -> Option<Option<&'static str>> {
+        super::records().find(|r| r.metadata().unwrap().name() == name).map(|r| r.template())
+    }
+
+    #[test]
+    fn positional_and_manual_format_args_templates() {
+        crate::event!(name: "rewritten", target: "table_tests", crate::Level::INFO, {}, "hello {}", 1);
+        crate::event!(name: "bare", target: "table_tests", crate::Level::INFO, "bare {}", 2);
+        crate::event!(name: "mixed", target: "table_tests", crate::Level::INFO, a = 3, "mixed {}", 3);
+        crate::event!(name: "named", target: "table_tests", crate::Level::INFO, message = "just a field");
+        crate::event!(name: "manual_fmt", target: "table_tests", crate::Level::INFO, message = format_args!("just {}", 4));
+
+        assert_eq!(template_for("rewritten"), Some(Some("hello {}")));
+        assert_eq!(template_for("bare"), Some(Some("bare {}")));
+        assert_eq!(template_for("mixed"), Some(Some("mixed {}")));
+        assert_eq!(template_for("named"), Some(None));
+        assert_eq!(template_for("manual_fmt"), Some(Some("just {}")));
+    }
 }
