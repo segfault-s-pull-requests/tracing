@@ -20,6 +20,7 @@ use crate::Metadata;
 /// The anchor has no metadata and is filtered from the public iterator. All
 /// records must have identical alignment and size (40 bytes on 64-bit ELF).
 #[doc(hidden)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct Entry {
     metadata: Option<&'static Metadata<'static>>,
@@ -67,11 +68,12 @@ static SECTION_ANCHOR: Entry = Entry { metadata: None, template: None, source: N
 fn entries() -> &'static [Entry] {
     // The section name is a C identifier so ELF linkers synthesize these
     // boundaries. Keep the name synchronized with the emission macro.
+    // Declare addresses as bytes so Rust-only record fields do not cross FFI.
     extern "C" {
         #[link_name = "__start_tracing_callsite_meta"]
-        static START: Entry;
+        static START: u8;
         #[link_name = "__stop_tracing_callsite_meta"]
-        static STOP: Entry;
+        static STOP: u8;
     }
     core::hint::black_box(&SECTION_ANCHOR);
     // SAFETY: the linker joins only fixed-layout Entry statics in this section;
@@ -81,7 +83,7 @@ fn entries() -> &'static [Entry] {
         let stop = core::ptr::addr_of!(STOP);
         let bytes = (stop as usize) - (start as usize);
         assert_eq!(bytes % core::mem::size_of::<Entry>(), 0);
-        core::slice::from_raw_parts(start, bytes / core::mem::size_of::<Entry>())
+        core::slice::from_raw_parts(start.cast::<Entry>(), bytes / core::mem::size_of::<Entry>())
     }
 }
 
@@ -200,6 +202,86 @@ macro_rules! __tracing_find_template {
 mod tests {
     fn template_for(name: &str) -> Option<Option<&'static str>> {
         super::records().find(|r| r.metadata().unwrap().name() == name).map(|r| r.template())
+    }
+
+    // Bevy 0.19.1's warn_once! nests a tracing reexport inside once!.
+    // Keep that expansion shape; local paths avoid adding Bevy dependencies.
+    macro_rules! once {
+        ($expression:expr) => {{
+            static SHOULD_FIRE: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(true);
+            if SHOULD_FIRE.swap(false, core::sync::atomic::Ordering::Relaxed) {
+                $expression;
+            }
+        }};
+    }
+    macro_rules! warn_once {
+        ($($arg:tt)+) => ({
+            once!(crate::warn!($($arg)+))
+        });
+    }
+
+    // Inspect embedded records directly: no scanner or source-file lookup is
+    // involved, and the sentinel must never count as a callsite.
+    fn record_for(name: &str) -> &'static super::Entry {
+        let mut matches = super::records().filter(|r| r.metadata().unwrap().name() == name);
+        let record = matches.next().expect("linked callsite record");
+        assert!(matches.next().is_none(), "duplicate callsite record");
+        record
+    }
+
+    #[test]
+    fn direct_callsite_source_and_location() {
+        let expected_line = line!() + 1;
+        crate::event!(name: "direct_source_test", crate::Level::INFO, "direct source {}", 7);
+        let record = record_for("direct_source_test");
+        assert_eq!(record.metadata().unwrap().file(), Some(file!()));
+        assert_eq!(record.metadata().unwrap().line(), Some(expected_line));
+        assert_eq!(record.template(), Some("direct source {}"));
+        assert_eq!(record.source(), Some(
+            r#"crate::event!(name: "direct_source_test", crate::Level::INFO, "direct source {}", 7)"#
+        ));
+    }
+
+    #[test]
+    fn bevy_once_wrapper_source_and_location() {
+        let expected_line = line!() + 1;
+        warn_once!(name: "bevy_once_source_test", "wrapped source {}", 7);
+        let record = record_for("bevy_once_source_test");
+        assert_eq!(record.metadata().unwrap().file(), Some(file!()));
+        assert_eq!(record.metadata().unwrap().line(), Some(expected_line));
+        assert_eq!(record.template(), Some("wrapped source {}"));
+        // Require the user's outer invocation, rather than the inner tracing
+        // expansion or merely a nonempty fragment from the wrapper definition.
+        assert_eq!(record.source(), Some(
+            r#"warn_once!(name: "bevy_once_source_test", "wrapped source {}", 7)"#
+        ));
+    }
+
+    // Preserve the invocation's layout: whitespace and newlines are the
+    // regression under test, including through Bevy's nested wrapper shape.
+    #[rustfmt::skip]
+    #[test]
+    fn multiline_bevy_once_wrapper_source_and_location() {
+        let expected_line = line!() + 1;
+        warn_once!(
+            name: "multiline_bevy_source_test",
+            window = 7,
+            "Cannot access window {}",
+            7
+        );
+        let record = record_for("multiline_bevy_source_test");
+        assert_eq!(record.metadata().unwrap().file(), Some(file!()));
+        assert_eq!(record.metadata().unwrap().line(), Some(expected_line));
+        assert_eq!(record.template(), Some("Cannot access window {}"));
+        assert_eq!(record.source(), Some(concat!(
+            "warn_once!(\n",
+            "            name: \"multiline_bevy_source_test\",\n",
+            "            window = 7,\n",
+            "            \"Cannot access window {}\",\n",
+            "            7\n",
+            "        )",
+        )));
     }
 
     #[test]
