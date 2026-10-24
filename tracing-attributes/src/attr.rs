@@ -17,6 +17,9 @@ pub(crate) struct EventArgs {
 
 #[derive(Clone, Default, Debug)]
 pub(crate) struct InstrumentArgs {
+    // Captured before rewriting and carried through both async expansion paths.
+    // This is internal side metadata, not an additional attribute argument.
+    pub(crate) source: Option<LitStr>,
     level: Option<Level>,
     pub(crate) name: Option<LitStrOrIdent>,
     target: Option<LitStrOrIdent>,

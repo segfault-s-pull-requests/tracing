@@ -95,13 +95,26 @@ pub fn records() -> impl Iterator<Item = &'static Entry> {
     entries().iter().filter(|entry| entry.metadata().is_some())
 }
 
+/// Prefer instrument's original function text over generated expansion spans.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __tracing_capture_source {
+    ([$source:expr]; $($fields:tt)*) => { $source };
+    ([]; $($fields:tt)*) => {
+        $crate::__macro_support::__tracing_source_text!($($fields)*)
+    };
+}
+
 /// Write exactly one linker record per generated callsite.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __tracing_record_metadata {
-    ($meta:ident) => { $crate::__tracing_record_metadata!($meta; None; None); };
+    // No format template does not mean no source: both callsite builders
+    // capture source independently, including spans and message-free events.
+    // Qualify Option variants so expansion also works without the prelude.
+    ($meta:ident) => { $crate::__tracing_record_metadata!($meta; $crate::__macro_support::Option::None); };
     ($meta:ident; $template:expr) => {
-        $crate::__tracing_record_metadata!($meta; $template; Some(__TRACING_SOURCE));
+        $crate::__tracing_record_metadata!($meta; $template; $crate::__macro_support::Option::Some(__TRACING_SOURCE));
     };
     ($meta:ident; $template:expr; $source:expr) => {
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -144,10 +157,10 @@ macro_rules! __tracing_find_template {
     // static format template. Match both tracing's qualified expansion and
     // user-written unqualified forms before the generic named-field arms.
     (@fields $meta:ident; message = $root:tt :: __macro_support :: format_args ! ($fmt:expr $(, $($args:tt)*)?), $($rest:tt)*) => {
-        $crate::__tracing_record_metadata!($meta; Some($fmt));
+        $crate::__tracing_record_metadata!($meta; $crate::__macro_support::Option::Some($fmt));
     };
     (@fields $meta:ident; message = format_args ! ($fmt:expr $(, $($args:tt)*)?), $($rest:tt)*) => {
-        $crate::__tracing_record_metadata!($meta; Some($fmt));
+        $crate::__tracing_record_metadata!($meta; $crate::__macro_support::Option::Some($fmt));
     };
 
     // Named fields, as accepted by fieldset! (with Debug/Display variants).
@@ -164,6 +177,11 @@ macro_rules! __tracing_find_template {
         $crate::__tracing_find_template!(@fields $meta; $($rest)*);
     };
     (@fields $meta:ident; %$($key:ident).+, $($rest:tt)*) => {
+        $crate::__tracing_find_template!(@fields $meta; $($rest)*);
+    };
+    // enabled! accepts trailing-dot field names; consume these as fields
+    // rather than attempting to parse them as positional format expressions.
+    (@fields $meta:ident; $($key:ident).+ ., $($rest:tt)*) => {
         $crate::__tracing_find_template!(@fields $meta; $($rest)*);
     };
     (@fields $meta:ident; $($key:ident).+, $($rest:tt)*) => {
@@ -191,7 +209,7 @@ macro_rules! __tracing_find_template {
     // format_args! ultimately requires a literal (including expanded macros
     // such as concat!). Using expr here preserves that upstream validation.
     (@fields $meta:ident; $fmt:expr, $($args:tt)*) => {
-        $crate::__tracing_record_metadata!($meta; Some($fmt));
+        $crate::__tracing_record_metadata!($meta; $crate::__macro_support::Option::Some($fmt));
     };
     (@fields $meta:ident; $($unknown:tt)+) => {
         $crate::__tracing_record_metadata!($meta);
@@ -258,6 +276,44 @@ mod tests {
         ));
     }
 
+    // Unlike warn_once!, Bevy also passes a complete logging expression to
+    // once!. Expr forwarding gives the inner tokens different span ancestry.
+    // Fails on the current compiler: parent/source/token spans stop at warn!.
+    // Keep this runnable with --ignored until Rust exposes the enclosing call.
+    #[test]
+    #[ignore = "the outer once! invocation is absent from accessible span ancestry"]
+    fn explicit_bevy_once_retains_outer_source() {
+        let expected_line = line!() + 1;
+        once!(crate::warn!(name: "explicit_once_source", "once source"));
+        let record = record_for("explicit_once_source");
+        assert_eq!(record.metadata().unwrap().file(), Some(file!()));
+        assert_eq!(record.metadata().unwrap().line(), Some(expected_line));
+        assert_eq!(record.template(), Some("once source"));
+        assert_eq!(record.source(), Some(
+            r#"once!(crate::warn!(name: "explicit_once_source", "once source"))"#
+        ));
+    }
+
+    // Preserve layout to match Bevy's multiline once!(warn!(...)) failures.
+    #[rustfmt::skip]
+    #[test]
+    #[ignore = "the outer once! invocation is absent from accessible span ancestry"]
+    fn multiline_explicit_bevy_once_retains_outer_source() {
+        let expected_line = line!() + 1;
+        once!(crate::warn!(
+            name: "multiline_explicit_once_source",
+            "Should have created the auxiliary depth of field texture by now"
+        ));
+        let record = record_for("multiline_explicit_once_source");
+        assert_eq!(record.metadata().unwrap().line(), Some(expected_line));
+        assert_eq!(record.source(), Some(concat!(
+            "once!(crate::warn!(\n",
+            "            name: \"multiline_explicit_once_source\",\n",
+            "            \"Should have created the auxiliary depth of field texture by now\"\n",
+            "        ))",
+        )));
+    }
+
     // Preserve the invocation's layout: whitespace and newlines are the
     // regression under test, including through Bevy's nested wrapper shape.
     #[rustfmt::skip]
@@ -282,6 +338,47 @@ mod tests {
             "            7\n",
             "        )",
         )));
+    }
+
+    // Source retention must not depend on whether fields contain a format
+    // template. These are the missing-source shapes found in both captures.
+    #[test]
+    fn events_without_templates_retain_source() {
+        crate::event!(name: "source_plain_message", crate::Level::INFO, message = "plain field");
+        crate::event!(name: "source_fields_only", crate::Level::INFO, answer = 42);
+        for (name, expected) in [
+            ("source_plain_message", r#"crate::event!(name: "source_plain_message", crate::Level::INFO, message = "plain field")"#),
+            ("source_fields_only", r#"crate::event!(name: "source_fields_only", crate::Level::INFO, answer = 42)"#),
+        ] {
+            let record = record_for(name);
+            assert_eq!(record.template(), None);
+            assert_eq!(record.source(), Some(expected), "source for {}", name);
+        }
+    }
+
+    #[test]
+    fn spans_without_templates_retain_source() {
+        let _empty = crate::info_span!("source_empty_span");
+        let _fields = crate::info_span!("source_fields_span", answer = 42);
+        for (name, expected) in [
+            ("source_empty_span", r#"crate::info_span!("source_empty_span")"#),
+            ("source_fields_span", r#"crate::info_span!("source_fields_span", answer = 42)"#),
+        ] {
+            let record = record_for(name);
+            assert!(record.metadata().unwrap().is_span());
+            assert_eq!(record.template(), None);
+            assert_eq!(record.source(), Some(expected), "source for {}", name);
+        }
+    }
+
+    #[test]
+    fn legacy_callsite_retains_source() {
+        let _callsite = crate::callsite!(name: "source_legacy_callsite", kind: crate::metadata::Kind::EVENT, fields: answer);
+        let record = record_for("source_legacy_callsite");
+        assert_eq!(record.template(), None);
+        assert_eq!(record.source(), Some(
+            r#"crate::callsite!(name: "source_legacy_callsite", kind: crate::metadata::Kind::EVENT, fields: answer)"#
+        ));
     }
 
     #[test]

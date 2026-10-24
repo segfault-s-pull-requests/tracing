@@ -88,6 +88,7 @@ use syn::{Attribute, FnModifiers, ItemFn, Signature, Visibility};
 
 mod attr;
 mod expand;
+mod instrument_source;
 /// Instruments a function to create and enter a `tracing` [span] every time
 /// the function is called.
 ///
@@ -576,7 +577,16 @@ pub fn instrument(
     args: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let args = syn::parse_macro_input!(args as attr::InstrumentArgs);
+    // Retain the original attribute/signature before either expansion rewrites
+    // the function. Source capture must not reject otherwise valid instrument input.
+    let source = instrument_source::capture(
+        args.clone().into(),
+        item.clone().into(),
+        cfg!(feature = "instrument-source-body"),
+    )
+    .ok();
+    let mut args = syn::parse_macro_input!(args as attr::InstrumentArgs);
+    args.source = source;
     // Cloning a `TokenStream` is cheap since it's reference counted internally.
     instrument_precise(args.clone(), item.clone())
         .unwrap_or_else(|_err| instrument_speculative(args, item))

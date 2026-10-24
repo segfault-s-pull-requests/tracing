@@ -63,6 +63,8 @@ async-await = []
 std = ["tracing-core/std"]
 log-always = ["log"]
 attributes = ["tracing-attributes"]
+# Include original function bodies in instrumented spans' source records.
+instrument-source-body = ["attributes", "tracing-attributes/instrument-source-body"]
 valuable = ["tracing-core/valuable"]
 
 [[bench]]

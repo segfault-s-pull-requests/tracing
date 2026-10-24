@@ -21,7 +21,9 @@ macro_rules! span {
     (target: $target:expr, parent: $parent:expr, $lvl:expr, $name:expr) => {
         $crate::span!(target: $target, parent: $parent, $lvl, $name,)
     };
-    (target: $target:expr, parent: $parent:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
+    // The private prefix carries instrument's pre-rewrite source directly to
+    // the linker record, independently of field parsing and runtime values.
+    ($(@__tracing_source $source:expr;)? target: $target:expr, parent: $parent:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
         {
             use $crate::__macro_support::Callsite as _;
             static __CALLSITE: $crate::__macro_support::MacroCallsite = $crate::callsite2! {
@@ -29,6 +31,7 @@ macro_rules! span {
                 kind: $crate::metadata::Kind::SPAN,
                 target: $target,
                 level: $lvl,
+                $(source: $source,)?
                 fields: $($fields)*
             };
             if $crate::level_enabled!($lvl)
@@ -50,7 +53,7 @@ macro_rules! span {
             }
         }
     };
-    (target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
+    ($(@__tracing_source $source:expr;)? target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
         {
             use $crate::__macro_support::Callsite as _;
             static __CALLSITE: $crate::callsite::DefaultCallsite = $crate::callsite2! {
@@ -58,6 +61,7 @@ macro_rules! span {
                 kind: $crate::metadata::Kind::SPAN,
                 target: $target,
                 level: $lvl,
+                $(source: $source,)?
                 fields: $($fields)*
             };
             if $crate::level_enabled!($lvl)
@@ -2728,6 +2732,9 @@ macro_rules! callsite {
                 kind: $kind,
             }
         };
+        // Legacy callsite! must supply source just like callsite2!, even
+        // though this path does not attempt to extract a format template.
+        static __TRACING_SOURCE: &str = $crate::__macro_support::__tracing_source_text!($($fields)*);
         $crate::__tracing_record_metadata!(META);
         static __CALLSITE: $crate::callsite::DefaultCallsite = $crate::callsite::DefaultCallsite::new(&META);
         __CALLSITE.register();
@@ -2752,6 +2759,7 @@ macro_rules! callsite2 {
         name: $name:expr,
         kind: $kind:expr,
         level: $lvl:expr,
+        $(source: $source:expr,)?
         fields: $($fields:tt)*
     ) => {{
         $crate::callsite2! {
@@ -2759,6 +2767,7 @@ macro_rules! callsite2 {
             kind: $kind,
             target: module_path!(),
             level: $lvl,
+            $(source: $source,)?
             fields: $($fields)*
         }
     }};
@@ -2767,6 +2776,7 @@ macro_rules! callsite2 {
         kind: $kind:expr,
         target: $target:expr,
         level: $lvl:expr,
+        $(source: $source:expr,)?
         fields: $($fields:tt)*
     ) => {{
         static META: $crate::Metadata<'static> = {
@@ -2780,7 +2790,7 @@ macro_rules! callsite2 {
             }
         };
         // Capture source once, then emit a single record with both source and template.
-        static __TRACING_SOURCE: &str = $crate::__macro_support::__tracing_source_text!($($fields)*);
+        static __TRACING_SOURCE: &str = $crate::__tracing_capture_source!([$($source)?]; $($fields)*);
         $crate::__tracing_find_template!(META; $($fields)*);
         $crate::callsite::DefaultCallsite::new(&META)
     }};

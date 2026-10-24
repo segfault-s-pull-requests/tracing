@@ -251,8 +251,12 @@ fn gen_block<B: ToTokens>(
         }
 
         let custom_fields = &args.fields;
+        // Pass source only to the instrumented span; body/ret/err events keep
+        // their own source, and source is never a subscriber-visible field.
+        let source = args.source.iter();
 
         quote!(::tracing::span!(
+            #(@__tracing_source #source;)*
             target: #target,
             #(parent: #parent,)*
             #level,

@@ -4,6 +4,8 @@
 //! When a compile probe confirms proc_macro_span support, walk expansion
 //! parents to try to recover the user's outermost logging wrapper. A span need not cover the full invocation;
 //! retain the stable result unless an ancestor contains a full macro call.
+//! Expression forwarding can omit the enclosing macro from all accessible
+//! spans (e.g. once!(warn!(...))); ancestor selection cannot recover that text.
 
 #![cfg_attr(tracing_proc_macro_span_unstable, feature(proc_macro_span))]
 
