@@ -126,3 +126,134 @@ macro_rules! __tracing_record_metadata {
 }
 
 
+
+
+/// Why a call went through the log backend instead of native tracing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LogFallbackReason {
+    /// An explicit \`logger:\` argument selects a particular log::Log instance.
+    ExplicitLogger = 1,
+    /// A runtime expression was used as a structured key name.
+    DynamicKey = 2,
+    /// Reserved for future formats not expressible as native tracing events.
+    UnsupportedFormat = 3,
+}
+
+/// One original log invocation which uses the log backend rather than tracing.
+///
+/// Unlike an event Entry, this is not a tracing callsite and does not own a
+/// tracing Metadata or DefaultCallsite. Its level/target may be runtime
+/// expressions, so their source tokens are retained rather than guessed.
+#[derive(Debug)]
+#[repr(C)]
+pub struct LogFallbackEntry {
+    file: Option<&'static str>,
+    line: u32,
+    module_path: &'static str,
+    level_expression: &'static str,
+    target_expression: &'static str,
+    template: Option<&'static str>,
+    source: Option<&'static str>,
+    reason: LogFallbackReason,
+}
+
+impl LogFallbackEntry {
+    /// Constructs a linker record. Intended for macro-generated statics.
+    #[doc(hidden)]
+    pub const fn new(
+        file: &'static str,
+        line: u32,
+        module_path: &'static str,
+        level_expression: &'static str,
+        target_expression: &'static str,
+        template: Option<&'static str>,
+        source: Option<&'static str>,
+        reason: LogFallbackReason,
+    ) -> Self {
+        Self {
+            file: Some(file), line, module_path, level_expression,
+            target_expression, template, source, reason,
+        }
+    }
+
+    /// Source file containing the original log callsite.
+    pub const fn file(&self) -> Option<&'static str> { self.file }
+    /// Original source line.
+    pub const fn line(&self) -> u32 { self.line }
+    /// Module containing the original callsite.
+    pub const fn module_path(&self) -> &'static str { self.module_path }
+    /// Source tokens for the log level, which may be dynamic.
+    pub const fn level_expression(&self) -> &'static str { self.level_expression }
+    /// Source tokens for the target, which may be dynamic.
+    pub const fn target_expression(&self) -> &'static str { self.target_expression }
+    /// Original positional format string, if available.
+    pub const fn template(&self) -> Option<&'static str> { self.template }
+    /// Best-effort original invocation source.
+    pub const fn source(&self) -> Option<&'static str> { self.source }
+    /// Explanation for selecting log rather than tracing.
+    pub const fn reason(&self) -> LogFallbackReason { self.reason }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[used]
+#[link_section = "tracing_log_fallback_meta"]
+static LOG_FALLBACK_SECTION_ANCHOR: LogFallbackEntry = LogFallbackEntry {
+    file: None, line: 0, module_path: "", level_expression: "",
+    target_expression: "", template: None, source: None,
+    reason: LogFallbackReason::UnsupportedFormat,
+};
+
+/// Enumerates log-backend callsites embedded in this executable.
+/// A callsite need not have executed to appear in the table.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn log_fallback_records() -> impl Iterator<Item = &'static LogFallbackEntry> {
+    extern "C" {
+        #[link_name = "__start_tracing_log_fallback_meta"]
+        static START: u8;
+        #[link_name = "__stop_tracing_log_fallback_meta"]
+        static STOP: u8;
+    }
+    core::hint::black_box(&LOG_FALLBACK_SECTION_ANCHOR);
+    // SAFETY: all statics in the section are LogFallbackEntry, repr(C),
+    // and have the same alignment and size.
+    let records: &'static [LogFallbackEntry] = unsafe {
+        let start = core::ptr::addr_of!(START);
+        let stop = core::ptr::addr_of!(STOP);
+        let bytes = (stop as usize) - (start as usize);
+        assert_eq!(bytes % core::mem::size_of::<LogFallbackEntry>(), 0);
+        core::slice::from_raw_parts(
+            start.cast::<LogFallbackEntry>(),
+            bytes / core::mem::size_of::<LogFallbackEntry>(),
+        )
+    };
+    records.iter().filter(|entry| entry.file.is_some())
+}
+
+/// Unsupported platforms currently return no linker records.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn log_fallback_records() -> impl Iterator<Item = &'static LogFallbackEntry> {
+    core::iter::empty()
+}
+
+/// Insert one diagnostic linker record for a log-backend callsite.
+///
+/// This macro does not evaluate any arguments or invoke any log backend.
+/// A string-literal format template is checked by log's usual format_args!
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __tracing_record_log_fallback {
+    (
+        level: $level:expr, target: $target:expr, reason: $reason:expr,
+        template: $template:expr, source: $source:expr
+    ) => {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[used]
+        #[link_section = "tracing_log_fallback_meta"]
+        static __LOG_FALLBACK_METADATA_RECORD: $crate::callsite_table::LogFallbackEntry =
+            $crate::callsite_table::LogFallbackEntry::new(
+                file!(), line!(), module_path!(), stringify!($level),
+                stringify!($target), $template, $source, $reason
+            );
+    };
+}
