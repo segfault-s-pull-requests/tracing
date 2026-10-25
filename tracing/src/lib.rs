@@ -980,6 +980,11 @@ mod macros;
 /// Link-time enumeration of macro-generated callsite metadata.
 pub mod callsite_table;
 
+// Same linker-entry implementation is used by tracing and the log shim.
+// Keep these reexports so the tracing macro implementation is unchanged.
+#[doc(hidden)]
+pub use tracing_core::{__tracing_capture_source, __tracing_record_metadata};
+
 pub mod dispatcher;
 pub mod field;
 /// Attach a span to a `std::future::Future`.
@@ -997,7 +1002,7 @@ pub mod __macro_support {
     // a crate to be named `core` and avoid name clashes.
     // See here: https://github.com/tokio-rs/tracing/issues/2761
     pub use core::{concat, file, format_args, iter::Iterator, line, option::Option, stringify};
-    pub use tracing_callsite_source::source_text as __tracing_source_text;
+    pub use tracing_core::callsite_source_text as __tracing_source_text;
 
     /// Callsite implementation used by macro-generated code.
     ///

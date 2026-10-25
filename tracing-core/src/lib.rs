@@ -152,6 +152,10 @@ extern crate alloc;
 extern crate std;
 
 #[doc(hidden)]
+/// Extract the best-effort original source text at a macro invocation.
+#[doc(hidden)]
+pub use tracing_callsite_source::source_text as callsite_source_text;
+
 pub mod __macro_support {
     // Re-export the `core` functions that are used in macros. This allows
     // a crate to be named `core` and avoid name clashes.
@@ -278,6 +282,8 @@ pub type Once = self::spin::Once<()>;
 pub use std::sync::Once;
 
 pub mod callsite;
+/// Shared link-time metadata for events and spans.
+pub mod callsite_table;
 pub mod dispatcher;
 pub mod event;
 pub mod field;
