@@ -257,3 +257,52 @@ macro_rules! __tracing_record_log_fallback {
             );
     };
 }
+
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+mod fallback_tests {
+    use super::{log_fallback_records, LogFallbackReason};
+
+    #[test]
+    fn fallback_diagnostic_records_are_enumerable_without_executing_callsites() {
+        let line = line!() + 1;
+        crate::__tracing_record_log_fallback!(
+            level: some_runtime_level, target: some_runtime_target,
+            reason: LogFallbackReason::DynamicKey,
+            template: Some("text {}"), source: Some("log!(dynamic key)")
+        );
+        let mut found = log_fallback_records().filter(
+            |r| r.file() == Some(file!()) && r.line() == line
+        );
+        let record = found.next().expect("linked fallback record");
+        assert!(found.next().is_none(), "exactly one record per macro use");
+        assert_eq!(record.reason(), LogFallbackReason::DynamicKey);
+        assert_eq!(record.module_path(), module_path!());
+        assert_eq!(record.level_expression(), "some_runtime_level");
+        assert_eq!(record.target_expression(), "some_runtime_target");
+        assert_eq!(record.template(), Some("text {}"));
+        assert_eq!(record.source(), Some("log!(dynamic key)"));
+    }
+
+    #[test]
+    fn normal_event_records_remain_separate() {
+        let line = line!() + 1;
+        crate::__tracing_record_log_fallback!(
+            level: level, target: target,
+            reason: LogFallbackReason::ExplicitLogger,
+            template: Some("fallback"), source: Some("source")
+        );
+        assert_eq!(
+            log_fallback_records()
+                .filter(|r| r.file() == Some(file!()) && r.line() == line)
+                .count(),
+            1
+        );
+        assert_eq!(
+            super::records()
+                .filter(|r| r.metadata().unwrap().file() == Some(file!())
+                    && r.metadata().unwrap().line() == Some(line))
+                .count(),
+            0
+        );
+    }
+}
