@@ -112,7 +112,7 @@ macro_rules! __tracing_record_metadata {
     // No format template does not mean no source: both callsite builders
     // capture source independently, including spans and message-free events.
     // Qualify Option variants so expansion also works without the prelude.
-    ($meta:ident) => { $crate::__tracing_record_metadata!($meta; core::option::Option::None); };
+    ($meta:ident) => { $crate::__tracing_record_metadata!($meta; $crate::__macro_support::Option::None); };
     ($meta:ident; $template:expr) => {
         $crate::__tracing_record_metadata!($meta; $template; $crate::__macro_support::Option::Some(__TRACING_SOURCE));
     };
