@@ -136,8 +136,10 @@ pub enum LogFallbackReason {
     ExplicitLogger = 1,
     /// A runtime expression was used as a structured key name.
     DynamicKey = 2,
+    /// A nonliteral target expression cannot generally be a static tracing target.
+    NonLiteralTarget = 3,
     /// Reserved for future formats not expressible as native tracing events.
-    UnsupportedFormat = 3,
+    UnsupportedFormat = 4,
 }
 
 /// One original log invocation which uses the log backend rather than tracing.
