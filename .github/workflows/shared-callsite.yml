@@ -1,0 +1,17 @@
+name: Shared callsite tables
+
+on:
+  push:
+    branches: [feature/shared-log-callsite-table]
+  pull_request:
+
+jobs:
+  table:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Shared core linker tables
+        run: cargo test -p tracing-core --lib callsite_table::fallback_tests
+      - name: Tracing native callsite metadata
+        run: cargo test -p tracing --lib callsite_table::tests
