@@ -3,7 +3,9 @@
 //! The shared link-time entry representation and source capture code live in
 //! tracing-core so that log can emit identical records without depending on tracing.
 
-pub use tracing_core::callsite_table::{records, Entry};
+pub use tracing_core::callsite_table::{
+    log_fallback_records, records, Entry, LogFallbackEntry, LogFallbackReason,
+};
 
 /// Why this parser is deliberately separate from tracing's existing field parser:
 /// tracing has multiple formatting paths. Some event! arms rewrite positional
