@@ -157,10 +157,57 @@ extern crate std;
 pub use tracing_callsite_source::source_text as callsite_source_text;
 
 pub mod __macro_support {
+    #[cfg(feature = "std")]
+    pub use crate::formatting::FormatValue;
+    #[cfg(feature = "std")]
+    pub use introspect_fmt::inspect_format;
+    #[cfg(feature = "std")]
+    pub use tracing_callsite_source::with_valueset;
     // Re-export the `core` functions that are used in macros. This allows
     // a crate to be named `core` and avoid name clashes.
     // See here: https://github.com/tokio-rs/tracing/issues/2761
-    pub use core::{file, line, module_path, option::Option};
+    pub use core::{file, format_args, line, module_path, option::Option};
+}
+
+#[cfg(feature = "std")]
+mod formatting;
+
+// Select the bridge using tracing-core's features: log may itself be no_std
+// while feature unification enables inspectable formatting on tracing-core.
+// Use tracing's field parser so all operands stay in the caller's scope and
+// are borrowed once, in message/KV order, before entering format callbacks.
+// format_args! below is parser input: with_valueset rewrites it to Format
+// before expansion, rather than dispatching ordinary fmt::Arguments.
+#[cfg(feature = "std")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __tracing_with_formatted_fields {
+    ($fields:expr, $callback:expr, [$($fmt:tt)*], {$($key:tt = %$value:expr,)*}) => {
+        $crate::__macro_support::with_valueset!(($crate) ($fields) ($callback) {
+            message = ::core::format_args!($($fmt)*),
+            $($key = %$value,)*
+        })
+    };
+}
+
+// introspect-fmt requires std. Keep the existing no_std representation only
+// when tracing-core genuinely has no inspectable formatting support.
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __tracing_with_formatted_fields {
+    ($fields:expr, $callback:expr, [$($fmt:tt)*], {$($key:tt = %$value:expr,)*}) => {
+        ($callback)(($fields).value_set_all(&[
+            $crate::__macro_support::Option::Some(
+                &$crate::__macro_support::format_args!($($fmt)*) as &dyn $crate::field::Value
+            ),
+            $(
+                $crate::__macro_support::Option::Some(
+                    &$crate::field::display(&$value) as &dyn $crate::field::Value
+                ),
+            )*
+        ]))
+    };
 }
 
 /// Statically constructs an [`Identifier`] for the provided [`Callsite`].

@@ -582,11 +582,9 @@ impl Span {
                 meta.target()
             };
             let values = attrs.values();
-            span.log(
-                target,
-                level_to_log!(*meta.level()),
-                format_args!("++ {};{}", meta.name(), crate::log::LogValueSet { values, is_first: false }),
-            );
+            crate::__tracing_with_format!(|message| {
+                span.log(target, level_to_log!(*meta.level()), message);
+            }, "++ {};{}", meta.name(), crate::log::LogValueSet { values, is_first: false });
         }}
 
         span
@@ -1053,7 +1051,9 @@ impl Span {
 
         if_log_enabled! { crate::Level::TRACE, {
             if let Some(_meta) = self.meta {
-                self.log(ACTIVITY_LOG_TARGET, log::Level::Trace, format_args!("-> {};", _meta.name()));
+                crate::__tracing_with_format!(|message| {
+                    self.log(ACTIVITY_LOG_TARGET, log::Level::Trace, message);
+                }, "-> {};", _meta.name());
             }
         }}
     }
@@ -1070,7 +1070,9 @@ impl Span {
 
         if_log_enabled! { crate::Level::TRACE, {
             if let Some(_meta) = self.meta {
-                self.log(ACTIVITY_LOG_TARGET, log::Level::Trace, format_args!("<- {};", _meta.name()));
+                crate::__tracing_with_format!(|message| {
+                    self.log(ACTIVITY_LOG_TARGET, log::Level::Trace, message);
+                }, "<- {};", _meta.name());
             }
         }}
     }
@@ -1237,11 +1239,9 @@ impl Span {
                 } else {
                     _meta.target()
                 };
-                self.log(
-                    target,
-                    level_to_log!(*_meta.level()),
-                    format_args!("{};{}", _meta.name(), crate::log::LogValueSet { values, is_first: false }),
-                );
+                crate::__tracing_with_format!(|message| {
+                    self.log(target, level_to_log!(*_meta.level()), message);
+                }, "{};{}", _meta.name(), crate::log::LogValueSet { values, is_first: false });
             }}
         }
 
@@ -1342,7 +1342,7 @@ impl Span {
 
     #[cfg(feature = "log")]
     #[inline]
-    fn log(&self, target: &str, level: log::Level, message: fmt::Arguments<'_>) {
+    fn log(&self, target: &str, level: log::Level, message: impl fmt::Display) {
         if let Some(meta) = self.meta {
             if level_to_log!(*meta.level()) <= log::max_level() {
                 let logger = log::logger();
@@ -1365,7 +1365,9 @@ impl Span {
                                 .module_path(meta.module_path())
                                 .file(meta.file())
                                 .line(meta.line())
-                                .args(message)
+                                // log::Record's public API still requires
+                                // std::fmt::Arguments at this final boundary.
+                                .args(format_args!("{}", message))
                                 .build(),
                         );
                     }
@@ -1479,11 +1481,9 @@ impl Drop for Span {
 
         if_log_enabled! { crate::Level::TRACE, {
             if let Some(meta) = self.meta {
-                self.log(
-                    LIFECYCLE_LOG_TARGET,
-                    log::Level::Trace,
-                    format_args!("-- {};", meta.name()),
-                );
+                crate::__tracing_with_format!(|message| {
+                    self.log(LIFECYCLE_LOG_TARGET, log::Level::Trace, message);
+                }, "-- {};", meta.name());
             }
         }}
     }

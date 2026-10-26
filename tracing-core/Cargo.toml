@@ -26,7 +26,7 @@ rust-version = "1.71.0"
 
 [features]
 default = ["std", "valuable?/std"]
-std = []
+std = ["dep:introspect-fmt"]
 # used to be an implicit feature from an optional dependency
 # FIXME: remove with the next breaking-change release
 once_cell = []
@@ -36,6 +36,8 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 tracing-callsite-source = { path = "../tracing-callsite-source", version = "0.1.0" }
+# Inspectable formatting is std-only, matching tracing's scoped message bridge.
+introspect-fmt = { path = "../../../introspect-fmt/introspect-fmt", features = ["nightly"], optional = true }
 
 [target.'cfg(tracing_unstable)'.dependencies]
 valuable = { version = "0.1.0", optional = true, default-features = false }

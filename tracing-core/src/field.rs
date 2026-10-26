@@ -122,6 +122,11 @@ use core::{
 use self::private::ValidLen;
 use crate::callsite;
 
+// Let visitors name the view through tracing::field without another dependency.
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use introspect_fmt::Format;
+
 /// An opaque key allowing _O_(1) access to a field in a `Span`'s key-value
 /// data.
 ///
@@ -273,6 +278,21 @@ pub struct Iter {
 /// [set of `Value`s added to a `Span`]: super::subscriber::Subscriber::record
 /// [`Event`]: super::event::Event
 pub trait Visit {
+    /// Visit borrowed formatting arguments, including their template and typed values.
+    ///
+    /// The default implementation reconstructs the message through
+    /// [`record_debug`](Self::record_debug). Override this method to inspect
+    /// arguments without rendering them. The borrowed view cannot be retained
+    /// beyond this call.
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+    fn visit_format(&mut self, field: &Field, value: &Format<'_>) {
+        // Format's Debug exposes its structure. Keep existing visitors on the
+        // rendered-text path instead, without using retained fmt::Arguments.
+        let value = Format::new(value.template(), value.args(), None);
+        self.record_debug(field, &crate::formatting::FormatValue(value))
+    }
+
     /// Visits an arbitrary type implementing the [`valuable`] crate's `Valuable` trait.
     ///
     /// [`valuable`]: https://docs.rs/valuable
@@ -654,7 +674,30 @@ impl crate::sealed::Sealed for fmt::Arguments<'_> {}
 
 impl Value for fmt::Arguments<'_> {
     fn record(&self, key: &Field, visitor: &mut dyn Visit) {
+        // Caller-built Arguments expose no typed operands. Native log/tracing
+        // macros must capture Format before reaching this compatibility path.
         visitor.record_debug(key, self)
+    }
+}
+
+#[cfg(feature = "std")]
+impl crate::sealed::Sealed for Format<'_> {}
+
+#[cfg(feature = "std")]
+impl Value for Format<'_> {
+    fn record(&self, key: &Field, visitor: &mut dyn Visit) {
+        visitor.visit_format(key, self)
+    }
+}
+
+#[cfg(feature = "std")]
+impl crate::sealed::Sealed for crate::formatting::FormatValue<'_> {}
+
+#[cfg(feature = "std")]
+impl Value for crate::formatting::FormatValue<'_> {
+    fn record(&self, key: &Field, visitor: &mut dyn Visit) {
+        // The macro adapter must preserve the same typed route as a raw Format.
+        self.0.record(key, visitor)
     }
 }
 
@@ -1194,6 +1237,62 @@ mod test {
         fn metadata(&self) -> &Metadata<'_> {
             &TEST_META_1
         }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn format_values_dispatch_without_rendering() {
+        struct MustNotRender;
+        impl fmt::Display for MustNotRender {
+            fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+                panic!("typed visitation must not render arguments")
+            }
+        }
+        struct TypedVisitor(usize);
+        impl Visit for TypedVisitor {
+            fn visit_format(&mut self, field: &Field, value: &Format<'_>) {
+                assert_eq!(field.name(), "foo");
+                assert_eq!(value.template(), "{} {}");
+                assert_eq!(value.args()[0].type_name(), "u32");
+                assert!(matches!(value.args()[0].value(), introspect_fmt::Value::U32(&31)));
+                assert!(matches!(value.args()[1].value(), introspect_fmt::Value::Opaque(_)));
+                self.0 += 1;
+            }
+            fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {
+                panic!("Format must reach visit_format through dyn Value")
+            }
+        }
+        let field = TEST_META_1.fields().field("foo").unwrap();
+        let mut visitor = TypedVisitor(0);
+        introspect_fmt::inspect_format!(|view| {
+            // Check both the public Format impl and the macro adapter, including
+            // trait-object dispatch rather than direct calls to visit_format.
+            let value: &dyn Value = &view;
+            value.record(&field, &mut visitor);
+            let wrapped = crate::formatting::FormatValue(view);
+            let value: &dyn Value = &wrapped;
+            value.record(&field, &mut visitor);
+        }, "{} {}", 31u32, MustNotRender);
+        assert_eq!(visitor.0, 2);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn default_format_visitor_preserves_rendered_debug_output() {
+        // Existing closure visitors implement only record_debug; the default
+        // must preserve the complete message and run without retained Arguments.
+        let field = TEST_META_1.fields().field("foo").unwrap();
+        let mut messages = alloc::vec::Vec::new();
+        introspect_fmt::inspect_format!(|view| {
+            let view = Format::new(view.template(), view.args(), None);
+            let mut visitor = |key: &Field, value: &dyn fmt::Debug| {
+                assert_eq!(key.name(), "foo");
+                messages.push(format!("{value:?}"));
+            };
+            view.record(&field, &mut visitor);
+            crate::formatting::FormatValue(view).record(&field, &mut visitor);
+        }, "value={:#06x}", 31u32);
+        assert_eq!(messages, ["value=0x001f", "value=0x001f"]);
     }
 
     struct TestCallsite2 {

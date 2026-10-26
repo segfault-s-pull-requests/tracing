@@ -8,5 +8,11 @@ publish = false
 [lib]
 proc-macro = true
 
+[dependencies]
+# Parse field expressions without splitting commas inside Rust expressions.
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing"] }
+
 [lints]
 workspace = true

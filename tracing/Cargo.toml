@@ -29,6 +29,9 @@ tracing-core = { path = "../tracing-core", version = "0.1.36", default-features 
 log = { version = "0.4.17", optional = true }
 tracing-attributes = { path = "../tracing-attributes", version = "0.1.31", optional = true }
 pin-project-lite = "0.2.9"
+# Keep the scoped formatting bridge private and retain the no_std macro path.
+introspect-fmt = { path = "../../../introspect-fmt/introspect-fmt", features = ["nightly"], optional = true }
+tracing-callsite-source = { path = "../tracing-callsite-source", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.3.6", default-features = false }
@@ -59,7 +62,7 @@ release_max_level_trace = []
 # This feature flag is no longer necessary.
 async-await = []
 
-std = ["tracing-core/std"]
+std = ["tracing-core/std", "dep:introspect-fmt", "dep:tracing-callsite-source"]
 log-always = ["log"]
 attributes = ["tracing-attributes"]
 # Include original function bodies in instrumented spans' source records.

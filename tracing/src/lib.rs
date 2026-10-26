@@ -995,6 +995,12 @@ pub mod subscriber;
 
 #[doc(hidden)]
 pub mod __macro_support {
+    #[cfg(feature = "std")]
+    pub use tracing_core::__macro_support::FormatValue;
+    #[cfg(feature = "std")]
+    pub use introspect_fmt::inspect_format;
+    #[cfg(feature = "std")]
+    pub use tracing_callsite_source::with_valueset;
     pub use crate::callsite::Callsite;
     use crate::{subscriber::Interest, Metadata};
     use core::{fmt, str};

@@ -11,6 +11,14 @@
 
 use proc_macro::{Span, TokenStream};
 
+mod valueset;
+
+/// Scope inspectable messages around dispatch without exposing a new tracing API.
+#[proc_macro]
+pub fn with_valueset(input: TokenStream) -> TokenStream {
+    valueset::expand(input)
+}
+
 #[cfg(tracing_proc_macro_span)]
 fn outer_invocation(mut span: Span) -> Option<String> {
     let mut found = None;
