@@ -11,7 +11,7 @@ pub struct FormatValue<'a>(pub Format<'a>);
 
 impl fmt::Debug for FormatValue<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0.render().map_err(|_| fmt::Error)?)
+        self.0.render_to(formatter).map_err(|_| fmt::Error)
     }
 }
 
@@ -24,6 +24,59 @@ impl fmt::Display for FormatValue<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::{cell::Cell, fmt::Write};
+
+    #[test]
+    fn failed_output_stops_before_formatting_later_arguments() {
+        // A subscriber may stop accepting output. Streaming must propagate
+        // that failure before invoking a later user formatter.
+        struct Reject;
+        impl fmt::Write for Reject {
+            fn write_str(&mut self, _: &str) -> fmt::Result {
+                Err(fmt::Error)
+            }
+        }
+        struct Counted<'a>(&'a Cell<usize>);
+        impl fmt::Display for Counted<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.set(self.0.get() + 1);
+                formatter.write_str("custom")
+            }
+        }
+        let calls = Cell::new(0);
+        introspect_fmt::inspect_format!(
+            |view| {
+                let value = FormatValue(Format::new(view.template(), view.args(), None));
+                assert!(write!(Reject, "{:?}", value).is_err());
+                assert_eq!(calls.get(), 0);
+            },
+            "prefix {}",
+            Counted(&calls)
+        );
+    }
+
+    #[test]
+    fn user_formatter_errors_propagate_without_retrying() {
+        struct Fails<'a>(&'a Cell<usize>);
+        impl fmt::Display for Fails<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.set(self.0.get() + 1);
+                formatter.write_str("partial")?;
+                Err(fmt::Error)
+            }
+        }
+        let calls = Cell::new(0);
+        introspect_fmt::inspect_format!(
+            |view| {
+                let mut output = std::string::String::new();
+                assert!(write!(output, "{}", FormatValue(view)).is_err());
+                assert_eq!(calls.get(), 1);
+                assert_eq!(output, "prefix partial");
+            },
+            "prefix {} suffix",
+            Fails(&calls)
+        );
+    }
 
     #[test]
     fn rendering_uses_inspectable_arguments_without_a_retained_formatter() {

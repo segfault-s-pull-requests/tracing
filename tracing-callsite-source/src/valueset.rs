@@ -207,21 +207,23 @@ fn generate(invocation: Invocation) -> Result<Tokens> {
     } = invocation;
     // Most callsites only have structured fields. Keep their existing expansion
     // and avoid introducing extra borrows or scopes when no formatting is needed.
-    if !values
-        .iter()
-        .map(|field| format_input(&field.value))
-        .collect::<Result<Vec<_>>>()?
-        .iter()
-        .any(Option::is_some)
-    {
+    // Keep the parsed inputs paired with their fields through code generation;
+    // qualified format_args! expressions need syntax analysis only once.
+    let values = values
+        .into_iter()
+        .map(|field| {
+            let format = format_input(&field.value)?;
+            Ok((field, format))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if !values.iter().any(|(_, format)| format.is_some()) {
         return Ok(quote!((#callback)(#runtime::valueset_all!(#fields, #original))));
     }
     let mut operands = Vec::new();
     let mut bindings = Vec::new();
     let mut recorded = Vec::new();
     let mut formats = Vec::new();
-    for field in values {
-        let format = format_input(&field.value)?;
+    for (field, format) in values {
         let value = if let Some(format) = format {
             let view = format_ident!(
                 "__tracing_format_{}",

@@ -176,6 +176,28 @@ fn caller_supplied_arguments_and_shadowed_macros_keep_working() {
 }
 
 #[test]
+fn large_counts_preserve_default_subscriber_output() {
+    // Exercise the largest count accepted by the pinned standard formatter,
+    // including dynamic precision and explicit format fields.
+    let width = 65_535usize;
+    let precision = 65_535usize;
+    let width_message = format!("prefix {} [{:width$}] suffix", 7u32, "x");
+    let precision_message = format!("prefix {} [{:.precision$}] suffix", 7u32, "xyz");
+    let (subscriber, handle) = subscriber::mock()
+        .event(expect::event().with_fields(expect::msg(format_args!("{}", width_message))))
+        .event(expect::event().with_fields(expect::msg(format_args!("{}", precision_message))))
+        .event(expect::event().with_fields(expect::msg(format_args!("{}", width_message))))
+        .only()
+        .run_with_handle();
+    with_default(subscriber, || {
+        tracing::info!("prefix {} [{:width$}] suffix", 7u32, "x");
+        tracing::info!("prefix {} [{:.precision$}] suffix", 7u32, "xyz");
+        tracing::info!(message = std::format_args!("prefix {} [{:width$}] suffix", 7u32, "x"));
+    });
+    handle.assert_finished();
+}
+
+#[test]
 fn events_spans_and_recorded_formats_reach_the_typed_visitor() {
     use std::sync::{Arc, Mutex};
     use tracing::{
