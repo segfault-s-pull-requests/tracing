@@ -289,7 +289,8 @@ pub trait Visit {
     fn visit_format(&mut self, field: &Field, value: &Format<'_>) {
         // Format's Debug exposes its structure. Keep existing visitors on the
         // rendered-text path instead, without using retained fmt::Arguments.
-        let value = Format::new(value.template(), value.args(), None);
+        // Preserve the invocation's parsed recipe while dropping retained Arguments.
+        let value = value.without_formatted();
         self.record_debug(field, &crate::formatting::FormatValue(value))
     }
 
@@ -1284,7 +1285,15 @@ mod test {
         let field = TEST_META_1.fields().field("foo").unwrap();
         let mut messages = alloc::vec::Vec::new();
         introspect_fmt::inspect_format!(|view| {
-            let view = Format::new(view.template(), view.args(), None);
+            let recipe = view.recipe().expect("literal template has static metadata");
+            let view = view.without_formatted();
+            // The same adapter used by the default visitor must retain static
+            // metadata while making the standard formatter unavailable.
+            assert!(view.formatted().is_none());
+            assert!(core::ptr::eq(
+                view.recipe().unwrap().placeholders(),
+                recipe.placeholders(),
+            ));
             let mut visitor = |key: &Field, value: &dyn fmt::Debug| {
                 assert_eq!(key.name(), "foo");
                 messages.push(format!("{value:?}"));
